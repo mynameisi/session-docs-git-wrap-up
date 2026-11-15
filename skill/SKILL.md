@@ -101,6 +101,19 @@ When in doubt: edit the doc to match the code. Do not edit code to match the doc
    - Do not rationalize away a real failure to "ship the docs."
 4. Re-run hooks/tests after any fix until everything passes cleanly.
 
+### Hooks that regenerate artifacts (common pitfall)
+
+If the pre-commit hook runs a **full rebuild** (e.g. `ingest.py`, doc generator, formatter that rewrites tracked JSON), the hook may pass while leaving the working tree dirty — or fail on the second run in an infinite loop.
+
+**Fix pattern:**
+- Add a **`--check-only`** mode to the eval/rebuild script: verify invariants without writing derived files.
+- Pre-commit calls check-only; full rebuild stays in CI, manual runs, or overnight autoresearch cron.
+- Example: `bash scripts/autoresearch.sh --check-only` in `.git/hooks/pre-commit`.
+
+### Agent-written script encoding (macOS)
+
+After creating `.py` / `.sh` files in the same session, run `file scripts/*`. If any show **UTF-16**, rewrite via shell heredoc before running hooks — otherwise tests fail with opaque `SyntaxError`. See `research-intelligence-hub` → `references/agent-file-encoding-pitfall.md`.
+
 ## Phase 5 — Commit
 
 1. Stage everything intended (`git add -A` is fine if the working tree is clean of unrelated junk; otherwise stage selectively).
@@ -143,6 +156,15 @@ EOF
    - Other hosts: confirm via API or UI screenshot/text.
    If visibility is wrong, flip it (`gh repo edit --visibility private`, equivalents on other hosts) and verify again.
 
+## Phase 6B — Live Runtime Activation Verification Gate (when session includes service/daemon/fleet upgrades)
+
+Committing and pushing code to GitHub is **NOT** the end of an upgrade! Whenever the session modified code or config intended for a running service, daemon, or fleet node (`win04`, `win05`, `win01`, `win02`, `wecom01..06`, `mac01`, `121.43.58.82`, `118.31.238.44`), you MUST enforce the **8-Point Live Activation Closure Gate (`A1..A8`)** before wrapping up:
+
+1. **Offline-Safe Disk Sync (`A1`)**: For domestic hosts without GitHub proxy, sync via `git bundle` (never rely on unverified `git fetch origin` + `git reset --hard origin/...` which silently rolls back to stale refs), and verify `disk_git_sha == target_sha` and `dirty_tracked_files == 0`.
+2. **Full Process-Tuple Reload (`A2, A6`)**: Never cold-restart Chrome (`isOHPC=1`) or mobile foreground apps, **but ALWAYS hot-restart every affected Python/service process in the node's tuple** (`worker` + `ai_pitch_sidecar :8799` + `panel :8765` / `uvicorn :8765`), verifying `len(pids) == 1` per role and `CreationDate >= sync_ts`.
+3. **Runtime Provenance, Config/Cache Parity & First-Tick Liveness (`A3, A4, A5, A7`)**: Verify runtime self-reported provenance (`engine.provenance` `head == target_sha` or `/health`), installed config copy parity (`policy_drift --sync`), DB active version, memory cache invalidation (`invalidate()`), and `post_boot_ticks >= 1`.
+4. **Honest Two-State Delivery Receipt Table (`A8`)**: Output the verified **Live Activation Receipt Table** (`🟢 ACTIVATED_IN_RAM` vs. `🟡 STAGED_PENDING_UNLOCK` if awaiting human login/CAPTCHA unlock).
+
 ## Phase 7 — Final verification (don't skip)
 
 Before reporting completion, confirm all of:
@@ -153,6 +175,7 @@ Before reporting completion, confirm all of:
 - [ ] Repo visibility is private (or N/A because the user wanted local-only / public was explicitly requested).
 - [ ] Every doc in the inventory either was updated this session or was verified to still be accurate.
 - [ ] All hook stages / test suites passed without `--no-verify` / `SKIP=…`.
+- [ ] **If any live service/fleet node was upgraded this session**: `A1..A8` Live Activation Closure is verified (`disk_sha == target_sha`, `CreationDate >= sync_ts` across all affected processes in the tuple, `engine.provenance == target_sha`, and the **Live Activation Receipt Table** is included in the response).
 
 Report concisely: what was changed, what was checked-and-found-already-correct, the commit SHA, and the privacy confirmation.
 
@@ -166,3 +189,4 @@ Report concisely: what was changed, what was checked-and-found-already-correct, 
 - Pushing first and then noticing the repo is public.
 - Picking a host (GitHub vs GitLab vs self-hosted) on the user's behalf when there's no remote and you can't tell which they want.
 - Calling the task done while `git status` still shows untracked or modified files.
+- Letting pre-commit run full ingest/regenerate on every commit when a `--check-only` path exists.
