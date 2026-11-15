@@ -7,6 +7,7 @@ description: >-
   asks to wrap up, sync docs, commit everything, run hooked tests, or push
   with a private repo. Language- and host-agnostic; works for Python/Node/Go/
   Rust/etc. and GitHub/GitLab/Codeberg.
+version: 1.1.0
 ---
 
 # Session docs, hooks, git wrap-up
@@ -61,6 +62,7 @@ Then add to the inventory (skip what doesn't exist):
 
 - **Top-level**: `README.md`, `CHANGELOG.md` / `HISTORY.md` / `RELEASES.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `LICENSE`.
 - **Project docs trees**: `docs/`, `wiki/`, `notes/`, `adr/`, `rfcs/`. Include rendered-doc sources (`docs/index.md`, `docs/conf.py`, `mkdocs.yml`).
+- **Decision & Veto Tombstone Ledger (`pstack` `/why`)**: `docs/decisions/DECISIONS_AND_VETOES.tsv` (and `gemini_workspace/progress_journal.md` if present). Whenever the user vetoed a proposal or falsified a premise during this session, record a tombstone row in `DECISIONS_AND_VETOES.tsv` so future sessions never repeat the rejected suggestion.
 - **Per-package READMEs in monorepos**: every `**/README*` under `packages/`, `apps/`, `crates/`, `services/`, `cmd/`, etc.
 - **Agent / IDE guidance**: `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.cursor/rules/*.md`, `.github/copilot-instructions.md`, `.windsurfrules`.
 - **Domain reports** in any language: `*报告.md`, `*-postmortem.md`, `*-rfc.md`, `*-design.md`.
@@ -173,7 +175,8 @@ Before reporting completion, confirm all of:
 - [ ] `git log -1` shows the new commit on the expected branch.
 - [ ] Remote is up to date (`git status` says "up to date with 'origin/…'").
 - [ ] Repo visibility is private (or N/A because the user wanted local-only / public was explicitly requested).
-- [ ] Every doc in the inventory either was updated this session or was verified to still be accurate.
+- [ ] Every doc in the inventory (including `docs/decisions/DECISIONS_AND_VETOES.tsv` when decisions/vetoes occurred) either was updated this session or was verified to still be accurate.
+- [ ] Workspace weeding & hygiene guard passes (if `scripts/workspace_weeding_ctl.py` exists, run `python3 scripts/workspace_weeding_ctl.py verify` and `python3 scripts/lint_welike_architecture.py` to ensure zero test debris like `MagicMock/` or `draft_*_folder/`).
 - [ ] All hook stages / test suites passed without `--no-verify` / `SKIP=…`.
 - [ ] **If any live service/fleet node was upgraded this session**: `A1..A8` Live Activation Closure is verified (`disk_sha == target_sha`, `CreationDate >= sync_ts` across all affected processes in the tuple, `engine.provenance == target_sha`, and the **Live Activation Receipt Table** is included in the response).
 
