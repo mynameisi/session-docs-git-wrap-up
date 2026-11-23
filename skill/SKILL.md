@@ -2,12 +2,12 @@
 name: session-docs-git-wrap-up
 description: >-
   Ends a coding session by reconciling every doc in the repo with the current
-  codebase, running every git hook stage without skipping tests, committing,
-  and pushing — creating a private remote when none exists. Use when the user
-  asks to wrap up, sync docs, commit everything, run hooked tests, or push
-  with a private repo. Language- and host-agnostic; works for Python/Node/Go/
-  Rust/etc. and GitHub/GitLab/Codeberg.
-version: 1.1.0
+  codebase, isolating concurrent-session edits, running hooks plus unit tests
+  without skipping, committing, and pushing — creating a private remote when
+  none exists. Use when the user asks to wrap up, sync docs, commit everything,
+  run hooked tests, or push with a private repo. Language- and host-agnostic;
+  works for Python/Node/Go/Rust/etc. and GitHub/GitLab/Codeberg.
+version: 1.2.0
 ---
 
 # Session docs, hooks, git wrap-up
@@ -23,27 +23,32 @@ Never hardcode `uv`, `npm`, `pre-commit`, or `gh`. Detect what this repo actuall
 Read the relevant manifests with one batch of file reads / `git ls-files` and answer:
 
 - **Package manager / runner.** Look for: `pyproject.toml` + `uv.lock` (uv) · `poetry.lock` (poetry) · `requirements*.txt` (pip) · `package.json` + lockfile (`pnpm-lock.yaml` → pnpm, `yarn.lock` → yarn, `bun.lockb` → bun, `package-lock.json` → npm) · `go.mod` (go) · `Cargo.toml` (cargo) · `Gemfile` (bundler) · `Makefile` / `justfile` / `Taskfile.yml` (make/just/task).
-- **Hook framework.** `.pre-commit-config.yaml` (pre-commit) · `lefthook.yml` (lefthook) · `.husky/` (husky) · `.git/hooks/` raw scripts · CI-only (no local hooks).
+- **Hook framework and actual hook coverage.** Inspect `.pre-commit-config.yaml` (pre-commit), `lefthook.yml` (lefthook), `.husky/` (husky), `.git/hooks/` raw scripts, or CI-only (no local hooks). Read the hook scripts to check whether they run only static lint/formatting or also execute tests.
 - **Test runner.** `pytest`, `unittest`, `vitest`, `jest`, `go test`, `cargo test`, `rspec`, `mix test`, etc. — look in scripts in `package.json`, `pyproject.toml [tool.*]`, `Makefile`, or CI config.
 - **Docs framework (if any).** `mkdocs.yml` · `docs/conf.py` (sphinx) · `docusaurus.config.js` · `mdbook` · `typedoc.json` · `astro.config` content collections. Generated docs may need a rebuild step.
 - **Repo host.** `git remote -v` → `github.com` (use `gh`), `gitlab.com` (use `glab`), self-hosted, or none. If no host CLI is installed, fall back to UI + `git remote add`.
 - **Default branch.** `git symbolic-ref refs/remotes/origin/HEAD` or `git remote show origin | rg 'HEAD branch'`. Fall back to `main`/`master` by inspection.
-- **Monorepo?** Multiple `package.json` / `pyproject.toml` / `Cargo.toml` files → expect multiple READMEs and per-package CHANGELOGs.
+- **Monorepo or federated subrepos.** Check for multiple `package.json` / `pyproject.toml` / `Cargo.toml` files (expect per-package READMEs/CHANGELOGs) and nested `.git` subrepos or submodules (check each subrepo's `git status` and commit/push child repos before updating parent references).
+- **Project governance & deploy gates (workspace-conditional).** Check for project-local rule files (`AGENTS.md`, `GEMINI.md`, `CLAUDE.md`), decision/veto ledgers, architecture linters, hygiene verifiers, or deploy-gate scripts. Follow the repository's own documented entry points rather than inventing ad-hoc commands.
 
 Record what you found and use it for the rest of the phases. When this skill writes commands like `<run> pre-commit …`, substitute the actual runner you detected (`uv run`, `poetry run`, `pnpm exec`, `npx`, bare command, etc.).
 
-## Phase 1 — Identify what changed in this session
+## Phase 1 — Identify changes and isolate concurrent edits
 
-Goal: know exactly which behaviors, files, or interfaces moved so docs can be reconciled against them.
+Goal: know exactly which behaviors, files, or interfaces moved in *this* session so docs can be reconciled accurately and unrelated work is never swallowed.
 
-1. Read the session transcript / current diff. Use `git status`, `git diff`, `git diff --stat <default-branch>...HEAD`, and `git log --oneline -20` to enumerate changes since the last push.
-2. List **added**, **removed**, **renamed**, and **behavior-changed** items. Pay particular attention to:
+1. Inspect `git status --short`, `git diff`, `git diff --stat <default-branch>...HEAD`, and `git log --oneline -20` to enumerate changes since the last push.
+2. **Concurrent-session & mixed-hunk boundary check.** Compare every modified or untracked path in `git status --short` against the files this session actually created or edited, and partition them into three buckets:
+   - **Session-owned files**: commit in Phase 5.
+   - **Unrelated concurrent files**: modified or created by another active session. Never edit, revert, delete, or stage them.
+   - **Mixed-hunk shared files**: files touched by both this session and another session. Never stage the whole file blindly (which swallows unfinished concurrent edits or breaks partial commits). Stage only this session's hunks (`git add -p` / patch staging) or pause and coordinate with the user before committing.
+3. List **added**, **removed**, **renamed**, and **behavior-changed** items owned by this session:
    - new or removed top-level scripts / entry points / public APIs
    - renamed CLI flags, commands, environment variables, config keys
    - changed defaults, hook stages, dependencies, supported runtimes
    - new or removed reports, generated artifacts, output paths
 
-If nothing of substance changed and docs already reflect reality, say so and stop — do not invent a CHANGELOG entry.
+If nothing of substance changed in this session's scope and docs already reflect reality, say so and stop — do not invent a CHANGELOG entry.
 
 ## Phase 2 — Inventory every doc in the repo
 
@@ -53,18 +58,18 @@ Run patterns like:
 
 ```bash
 git ls-files '*.md' '*.mdx' '*.rst' '*.adoc' '*.txt' 2>/dev/null
-git ls-files | rg -i '(^|/)(readme|changelog|history|releases?|contributing|architecture|design|adr|rfc|notes?|agents|claude|cursor)\b' \
+git ls-files | rg -i '(^|/)(readme|changelog|history|releases?|contributing|architecture|design|adr|rfc|notes?|agents|claude|cursor|gemini)\b' \
   | rg -i '\.(md|mdx|rst|txt|adoc)$'
-ls .cursor/rules/ AGENTS.md CLAUDE.md .cursorrules docs/ 2>/dev/null
+ls .cursor/rules/ AGENTS.md GEMINI.md CLAUDE.md .cursorrules docs/ 2>/dev/null
 ```
 
 Then add to the inventory (skip what doesn't exist):
 
 - **Top-level**: `README.md`, `CHANGELOG.md` / `HISTORY.md` / `RELEASES.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `LICENSE`.
 - **Project docs trees**: `docs/`, `wiki/`, `notes/`, `adr/`, `rfcs/`. Include rendered-doc sources (`docs/index.md`, `docs/conf.py`, `mkdocs.yml`).
-- **Decision & Veto Tombstone Ledger (`pstack` `/why`)**: `docs/decisions/DECISIONS_AND_VETOES.tsv` (and `gemini_workspace/progress_journal.md` if present). Whenever the user vetoed a proposal or falsified a premise during this session, record a tombstone row in `DECISIONS_AND_VETOES.tsv` so future sessions never repeat the rejected suggestion.
+- **Decision / veto ledger & session journal (if present)**: any repository decision/veto tombstone file (for example `docs/decisions/*.tsv` or `docs/adr/`) and progress journal declared by the project's agent rules. Whenever this session recorded an architectural decision, veto, or falsified premise, update the ledger so future sessions never repeat rejected paths.
 - **Per-package READMEs in monorepos**: every `**/README*` under `packages/`, `apps/`, `crates/`, `services/`, `cmd/`, etc.
-- **Agent / IDE guidance**: `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.cursor/rules/*.md`, `.github/copilot-instructions.md`, `.windsurfrules`.
+- **Agent / IDE guidance**: `AGENTS.md`, `GEMINI.md`, `CLAUDE.md`, `.cursorrules`, `.cursor/rules/*.md`, `.github/copilot-instructions.md`, `.windsurfrules` (respect any byte-parity rules the repo enforces, such as `AGENTS.md == GEMINI.md`).
 - **Domain reports** in any language: `*报告.md`, `*-postmortem.md`, `*-rfc.md`, `*-design.md`.
 - **Configuration "docs"**: `.env.example`, `pyproject.toml` / `package.json` / `Cargo.toml` `description`/`keywords` fields, `mkdocs.yml` nav.
 - **Module-level docstrings / file headers** that read like docs (often describe project layout and rot when files move).
@@ -78,52 +83,54 @@ For every doc in the inventory, scan for these specific failure modes and fix wh
 2. **Stale commands.** Re-read `Quick start` / `Usage` / `Development` sections. Verify every command resolves under the **detected** toolchain (Phase 0). Update flags, scripts, and entry points.
 3. **Project-layout trees.** ASCII trees in READMEs rot fast. Diff the tree in the doc against `git ls-files` (top two levels). Update the tree, and update prose that names the files.
 4. **Capability tables / feature lists.** If a feature was added, removed, or relocated this session, the corresponding row must change.
-5. **CHANGELOG / release notes.** Add an entry under `Unreleased` (or today's date, whichever the project uses). Match the file's own headings (`Added` / `Changed` / `Deprecated` / `Removed` / `Fixed` / `Security`) and the project's commit-message style. If the project doesn't keep a CHANGELOG, don't introduce one — note the change in whatever release-notes channel the project uses, or skip.
+5. **CHANGELOG / release notes.** Add an entry under `Unreleased` (or today's date, whichever the project uses). Match the file's own headings (`Added` / `Changed` / `Deprecated` / `Removed` / `Fixed` / `Security`) and the project's commit-message style. If the project doesn't keep a CHANGELOG, don't introduce one — note the change in whatever release-notes channel or journal the project uses, or skip.
 6. **Cross-references between docs.** Every link from one doc to another must still resolve, and the target must still say what the source claims.
 7. **Code examples / API snippets in docs.** Function names, flags, and return shapes shown in markdown must match current code. Grep the codebase for the example identifiers to confirm.
 8. **Configuration docs.** `.env.example`, hook configs, CI configs — if a new env var, secret, or hook stage was introduced, document it; if one was removed, delete the mention.
 9. **Anchor / link integrity.** Internal `#anchor` links and relative links (`./other.md`) must still resolve. Fix dead anchors.
 10. **Terminology consistency.** Pick one term per concept and use it across all docs (don't mix synonyms for the same thing).
 11. **Generated docs (if applicable).** If the project uses sphinx / mkdocs / docusaurus / typedoc / mdbook, rebuild after editing source. Don't commit only the source if the project tracks the built output (rare but exists).
-12. **Monorepo sync.** When something at the workspace root changed, check whether per-package READMEs / CHANGELOGs also need to move.
+12. **Monorepo / federated sync.** When something at the workspace root or a child repo changed, check whether per-package READMEs, manifests, or parent references also need to move.
 
 When in doubt: edit the doc to match the code. Do not edit code to match the doc unless the user explicitly asks.
 
-## Phase 4 — Tests and hooks (no skipping)
+## Phase 4 — Tests and hooks (no skipping, no lint-only blind spot)
 
-1. Run the full hooked workflow under the **detected** toolchain. Common shapes:
+1. Run the full hooked workflow under the **detected** toolchain:
    - **pre-commit (Python or polyglot)**: `<run> pre-commit run --all-files` → `<run> pre-commit run --hook-stage pre-push --all-files`.
-   - **husky / lint-staged (Node)**: `<pm> run lint && <pm> run test` (or whatever `package.json` scripts the husky hooks call). To exercise the actual hook, do an empty `git commit --allow-empty -m 'test'` on a throwaway branch only if needed.
+   - **husky / lint-staged (Node)**: `<pm> run lint && <pm> run test` (or whatever `package.json` scripts the husky hooks call).
    - **lefthook**: `lefthook run pre-commit && lefthook run pre-push`.
-   - **No local hooks**: run the project's documented test/lint scripts directly.
-2. Never use `--no-verify`, `--no-gpg-sign`, or `SKIP=…` unless the user explicitly approved it for this turn.
-3. If a test fails:
+   - **Raw `.git/hooks/` scripts**: execute the hook's underlying check command directly before committing, and let `git commit` run the real hook.
+   - **No local hooks**: run the project's documented lint and test commands directly.
+2. **Close the lint-only hook gap.** If local hooks run only static linting or formatting (for example a `.git/hooks/pre-commit` that runs an AST linter without tests), you MUST also run the test suite covering this session's changes (or the full suite when required by the repo's deploy/release gate). Passing a lint-only hook never substitutes for passing tests.
+3. Never use `--no-verify`, `--no-gpg-sign`, or `SKIP=…` unless the user explicitly approved it for this turn.
+4. If a test fails:
    - First decide *why*. If the test still encodes correct intent, fix the code until it passes.
    - If the test is genuinely obsolete (the behavior it asserted was intentionally removed or replaced this session), update or delete it, and note that in the CHANGELOG / release notes.
    - Do not rationalize away a real failure to "ship the docs."
-4. Re-run hooks/tests after any fix until everything passes cleanly.
+5. Re-run hooks and tests after any fix until everything passes cleanly.
 
 ### Hooks that regenerate artifacts (common pitfall)
 
-If the pre-commit hook runs a **full rebuild** (e.g. `ingest.py`, doc generator, formatter that rewrites tracked JSON), the hook may pass while leaving the working tree dirty — or fail on the second run in an infinite loop.
+If a pre-commit hook runs a **full rebuild** (e.g. an ingest script, doc generator, or formatter that rewrites tracked JSON), the hook may pass while leaving the working tree dirty — or fail on the second run in an infinite loop.
 
 **Fix pattern:**
-- Add a **`--check-only`** mode to the eval/rebuild script: verify invariants without writing derived files.
-- Pre-commit calls check-only; full rebuild stays in CI, manual runs, or overnight autoresearch cron.
-- Example: `bash scripts/autoresearch.sh --check-only` in `.git/hooks/pre-commit`.
+- Add a **`--check-only`** mode to the eval/rebuild script so it verifies invariants without writing derived files.
+- Keep pre-commit on check-only; run full rebuilds explicitly or in CI.
 
 ### Agent-written script encoding (macOS)
 
-After creating `.py` / `.sh` files in the same session, run `file scripts/*`. If any show **UTF-16**, rewrite via shell heredoc before running hooks — otherwise tests fail with opaque `SyntaxError`. See `research-intelligence-hub` → `references/agent-file-encoding-pitfall.md`.
+After creating `.py` or `.sh` files in the same session, run `file <new_scripts>`. If any show **UTF-16**, rewrite them as clean UTF-8 before running hooks — otherwise interpreters fail with opaque `SyntaxError`.
 
-## Phase 5 — Commit
+## Phase 5 — Commit (selective allowlist, never blind `git add -A`)
 
-1. Stage everything intended (`git add -A` is fine if the working tree is clean of unrelated junk; otherwise stage selectively).
-2. **Match the project's commit-message convention.** Detect, don't assume:
+1. **Stage explicitly by path allowlist** (`git add <file1> <file2> ...`) covering only this session's files and reconciled docs. Never run blind `git add -A` when concurrent sessions, untracked scratch files, or nested repos could be present. For a mixed-hunk file from Phase 1, stage only this session's hunks or pause for user coordination.
+2. In a federated multi-repo workspace, commit touched child subrepos first (respecting any code-line isolation rules declared in `AGENTS.md`), then commit the parent repo.
+3. **Match the project's commit-message convention.** Detect, don't assume:
    - Conventional Commits if `commitizen` / `commitlint` / `cz-conventional-changelog` is configured.
    - The repo's own `git log --oneline -20` style otherwise.
-3. Prefer one focused commit when changes are tightly related; split into multiple when they are not (e.g. doc commit separate from a code-fix commit).
-4. Pass the message via heredoc to keep formatting clean:
+4. Prefer one focused commit when changes are tightly related; split into multiple when they are not (e.g. doc commit separate from a code-fix commit).
+5. Pass the message via heredoc to keep formatting clean:
 
 ```bash
 git commit -m "$(cat <<'EOF'
@@ -144,52 +151,58 @@ EOF
    - Make an initial commit (after Phases 3–5).
 3. **If there is a repo but no remote**: create a **private** remote, then push. Use whatever host CLI matches the user's platform:
 
-   | Host        | Command                                                                                  |
-   |-------------|------------------------------------------------------------------------------------------|
-   | GitHub      | `gh repo create <name> --private --source=. --remote=origin --push`                      |
-   | GitLab      | `glab repo create <name> --private && git remote add origin <url> && git push -u origin HEAD` |
-   | Codeberg / Gitea | API call or UI; then `git remote add origin <url> && git push -u origin HEAD`        |
-   | Self-hosted | UI / API to create as private; then `git remote add origin <url> && git push -u origin HEAD` |
+   | Host             | Command                                                                                    |
+   |------------------|--------------------------------------------------------------------------------------------|
+   | GitHub           | `gh repo create <name> --private --source=. --remote=origin --push`                        |
+   | GitLab           | `glab repo create <name> --private && git remote add origin <url> && git push -u origin HEAD` |
+   | Codeberg / Gitea | API call or UI; then `git remote add origin <url> && git push -u origin HEAD`              |
+   | Self-hosted      | UI / API to create as private; then `git remote add origin <url> && git push -u origin HEAD` |
 
    If no host CLI is installed and the user can't tell you which host to use, **stop and ask** rather than picking one.
-4. **Verify privacy** before declaring done. Examples:
-   - GitHub: `gh repo view --json visibility,isPrivate` → expect `"isPrivate": true`.
+4. **Verify privacy** before declaring done:
+   - GitHub: `gh repo view --json visibility,isPrivate` → expect `"isPrivate": true` (unless the user explicitly maintains a public repo).
    - GitLab: `glab repo view --output json` → expect `visibility` ≠ `public`.
-   - Other hosts: confirm via API or UI screenshot/text.
-   If visibility is wrong, flip it (`gh repo edit --visibility private`, equivalents on other hosts) and verify again.
+   - Other hosts: confirm via API or UI.
+   If a newly created repo has the wrong visibility, flip it (`gh repo edit --visibility private`, equivalents on other hosts) and verify again. Never silently change visibility on a pre-existing public repo without confirming with the user; report it clearly instead.
 
-## Phase 6B — Live Runtime Activation Verification Gate (when session includes service/daemon/fleet upgrades)
+## Phase 6B — Deploy Gate & Live Activation Closure (workspace-conditional)
 
-Committing and pushing code to GitHub is **NOT** the end of an upgrade! Whenever the session modified code or config intended for a running service, daemon, or fleet node (`win04`, `win05`, `win01`, `win02`, `wecom01..06`, `mac01`, `121.43.58.82`, `118.31.238.44`), you MUST enforce the **8-Point Live Activation Closure Gate (`A1..A8`)** before wrapping up:
+Apply this phase **only** when the session modified code or config targeting a live deployed service, daemon, or remote fleet node. Skip completely for local-only library, script, doc, or skill changes.
 
-1. **Offline-Safe Disk Sync (`A1`)**: For domestic hosts without GitHub proxy, sync via `git bundle` (never rely on unverified `git fetch origin` + `git reset --hard origin/...` which silently rolls back to stale refs), and verify `disk_git_sha == target_sha` and `dirty_tracked_files == 0`.
-2. **Full Process-Tuple Reload (`A2, A6`)**: Never cold-restart Chrome (`isOHPC=1`) or mobile foreground apps, **but ALWAYS hot-restart every affected Python/service process in the node's tuple** (`worker` + `ai_pitch_sidecar :8799` + `panel :8765` / `uvicorn :8765`), verifying `len(pids) == 1` per role and `CreationDate >= sync_ts`.
-3. **Runtime Provenance, Config/Cache Parity & First-Tick Liveness (`A3, A4, A5, A7`)**: Verify runtime self-reported provenance (`engine.provenance` `head == target_sha` or `/health`), installed config copy parity (`policy_drift --sync`), DB active version, memory cache invalidation (`invalidate()`), and `post_boot_ticks >= 1`.
-4. **Honest Two-State Delivery Receipt Table (`A8`)**: Output the verified **Live Activation Receipt Table** (`🟢 ACTIVATED_IN_RAM` vs. `🟡 STAGED_PENDING_UNLOCK` if awaiting human login/CAPTCHA unlock).
+1. **Run the repository's deploy gate first (if defined).** Check `AGENTS.md` or project scripts for a deploy gate (code-line check, full-suite green requirement, restart budget, peak/freeze window, or open observation window). Run that gate before syncing or restarting any node.
+   - **A gate refusal is a valid completion state.** If the gate refuses, stop deploy execution immediately, mark affected nodes **`STAGED_PENDING_GATE`**, and include the exact refusal output. Never bypass a deploy gate or freeze window just to turn a table green.
+2. **When no gate blocks and deployment proceeds**, follow the repository's live-activation protocol (such as `A1..A8`):
+   - **Offline-safe sync**: use `git bundle` or verified artifact transfer for hosts without direct upstream access; confirm `disk_sha == target_sha` and `dirty == 0`.
+   - **Decoupled reload**: hot-restart every affected service process in the node's process tuple while preserving protected sessions (never cold-restart logged-in browser/app sessions when the repo forbids it), and verify fresh process timestamps.
+   - **Runtime provenance, config/cache parity & first-tick liveness**: confirm the running process reports `target_sha`, installed configs/caches match disk, upstream health returns `200 OK`, and post-boot ticks advance with zero crashes.
+   - **Honest three-state delivery receipt**: classify every node strictly as `ACTIVATED_IN_RAM`, `STAGED_PENDING_UNLOCK` (awaiting human login/unlock), or `STAGED_PENDING_GATE` (held by deploy gate / freeze window).
 
 ## Phase 7 — Final verification (don't skip)
 
 Before reporting completion, confirm all of:
 
-- [ ] `git status` is clean.
-- [ ] `git log -1` shows the new commit on the expected branch.
-- [ ] Remote is up to date (`git status` says "up to date with 'origin/…'").
-- [ ] Repo visibility is private (or N/A because the user wanted local-only / public was explicitly requested).
-- [ ] Every doc in the inventory (including `docs/decisions/DECISIONS_AND_VETOES.tsv` when decisions/vetoes occurred) either was updated this session or was verified to still be accurate.
-- [ ] Workspace weeding & hygiene guard passes (if `scripts/workspace_weeding_ctl.py` exists, run `python3 scripts/workspace_weeding_ctl.py verify` and `python3 scripts/lint_welike_architecture.py` to ensure zero test debris like `MagicMock/` or `draft_*_folder/`).
-- [ ] All hook stages / test suites passed without `--no-verify` / `SKIP=…`.
-- [ ] **If any live service/fleet node was upgraded this session**: `A1..A8` Live Activation Closure is verified (`disk_sha == target_sha`, `CreationDate >= sync_ts` across all affected processes in the tuple, `engine.provenance == target_sha`, and the **Live Activation Receipt Table** is included in the response).
+- [ ] **Git cleanliness (concurrent-aware)**: either `git status` is completely clean, OR (when concurrent sessions hold unrelated dirty files) every file owned by this session is committed and pushed while untouched concurrent files are explicitly listed as preserved.
+- [ ] `git log -1` shows the new commit on the expected branch (and touched nested subrepos are committed/pushed too).
+- [ ] Remote is up to date (`git status -sb` shows up to date with `origin/…`).
+- [ ] Repo visibility is verified (private for new/private repos; flag clearly if a pre-existing repo is public).
+- [ ] Every doc in the inventory (including any project decision/veto ledger or session journal when applicable) was either updated this session or verified still accurate.
+- [ ] Project-defined architecture linters and workspace-hygiene verifiers (when declared in `AGENTS.md` or repo scripts, run via their canonical entry points such as `lint_architecture.py --repo .`) pass with zero errors.
+- [ ] All hook stages AND required unit test suites passed without `--no-verify` / `SKIP=…`.
+- [ ] **If any live service/fleet node was in scope**: deploy-gate output and/or live-activation provenance (`ACTIVATED_IN_RAM` / `STAGED_PENDING_UNLOCK` / `STAGED_PENDING_GATE`) are verified and reported honestly.
 
-Report concisely: what was changed, what was checked-and-found-already-correct, the commit SHA, and the privacy confirmation.
+Report concisely: what was changed, what was checked-and-found-already-correct, the commit SHA(s), any preserved concurrent files, and the visibility confirmation.
 
 ## Anti-patterns
 
-- Hardcoding `uv` / `npm` / `gh` instead of detecting the project's actual toolchain in Phase 0.
-- Updating only `README.md` and `CHANGELOG.md` without inventorying the rest of the docs (per-package READMEs, ADRs, agent rules, generated docs).
+- Hardcoding `uv` / `npm` / `gh` or project-specific IPs/hostnames instead of detecting the project's toolchain and rules in Phase 0.
+- Running blind `git add -A` or staging a whole mixed-hunk file when another session is editing the same workspace.
+- Treating a lint-only pre-commit hook as proof that unit tests pass.
+- Bypassing a repo's deploy gate or freeze window to force a live restart during Phase 6B.
+- Updating only `README.md` and `CHANGELOG.md` without inventorying agent rules, ledgers, ADRs, or per-package docs.
 - Treating any module named `sync.py` (or similar) as "doc sync" — read the file before assuming.
 - Adding a CHANGELOG entry for changes that didn't actually happen this session, or introducing a CHANGELOG to a project that doesn't keep one.
 - Bypassing hooks "just this once."
-- Pushing first and then noticing the repo is public.
+- Pushing first and then noticing a newly created repo is public, or silently flipping visibility on a pre-existing public repo without telling the user.
 - Picking a host (GitHub vs GitLab vs self-hosted) on the user's behalf when there's no remote and you can't tell which they want.
-- Calling the task done while `git status` still shows untracked or modified files.
+- Leaving session-owned untracked or modified files uncommitted when reporting completion.
 - Letting pre-commit run full ingest/regenerate on every commit when a `--check-only` path exists.
